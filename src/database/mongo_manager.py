@@ -68,6 +68,8 @@ def save_user_profile(user_id: str, profile_data: dict, type: str):
             {"user_id": user_id},
             {"$set": {
                 "password": profile_data,
+                "plan": "Basic",
+                "analytics": {"emails": 0, "switches": 0, "commands": 0},
                 "profile": get_default_profile_data()
             }},
             upsert=True
