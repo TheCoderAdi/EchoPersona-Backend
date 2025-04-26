@@ -1,0 +1,13 @@
+uvicorn==0.34.2
+fastapi==0.115.12
+langchain-groq==0.3.2
+pinecone==6.0.2
+langchain-huggingface==0.1.2
+python-dotenv==1.1.0
+pymongo==4.12.0
+python-jose==3.4.0
+passlib==1.7.4
+serpapi==0.1.5
+bcrypt==4.3.0
+discord==2.3.2
+web3==7.10.0
