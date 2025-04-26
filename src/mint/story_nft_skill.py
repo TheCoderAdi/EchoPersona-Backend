@@ -11,7 +11,7 @@ from src.database.mongo_manager import (
     save_story_nft
 )
 
-load_dotenv()
+load_dotenv(override=True)
 
 MONAD_RPC = "https://testnet-rpc.monad.xyz"  
 CONTRACT_ADDRESS = os.getenv("STORY_NFT_ADDRESS")

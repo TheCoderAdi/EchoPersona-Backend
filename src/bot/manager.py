@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 import asyncio
 from src.database.mongo_manager import log_away_message
 
-load_dotenv()
+load_dotenv(override=True)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 FASTAPI_ENDPOINT = os.getenv("FASTAPI_ENDPOINT")

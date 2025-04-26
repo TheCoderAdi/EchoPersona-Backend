@@ -34,7 +34,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 from typing import List, Dict
 
-load_dotenv()
+load_dotenv(override=True)
 
 app = FastAPI()
 

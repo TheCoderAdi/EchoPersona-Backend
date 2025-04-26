@@ -5,7 +5,7 @@ import json
 from dotenv import load_dotenv
 import math
 
-load_dotenv()
+load_dotenv(override=True)
 
 provider = Web3.HTTPProvider("https://testnet-rpc.monad.xyz")
 w3 = Web3(provider)

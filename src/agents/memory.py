@@ -7,7 +7,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 
 import os
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
 class MemoryManager:
     def __init__(self):
