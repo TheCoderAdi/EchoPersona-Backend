@@ -1,7 +1,9 @@
 from pymongo import MongoClient
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
+import uuid
+from src.utils.email_service import send_verification_email
 
 load_dotenv(override=True)
 
@@ -60,17 +62,45 @@ def save_user_auth(user_id: str, hashed_password: str):
 
 def get_user_auth(user_id: str):
     doc = collection.find_one({"user_id": user_id})
-    return doc.get("password") if doc else None
+    return doc
+
+def get_user_by_token(token: str):
+    doc = collection.find_one({"verification_token": token})
+    if doc:
+        if doc.get("verification_expiry") and datetime.utcnow() > datetime.fromisoformat(doc["verification_expiry"]):
+            return None
+        return doc
+    return None
+
+def update_user_verification(user_id: str):
+    doc = collection.find_one({"user_id": user_id})
+    if doc:
+        collection.update_one(
+            {"user_id": user_id},
+            {"$set": {
+                "email_verified": True,
+                "verification_token": None,
+                "verification_expiry": None
+            }}
+        )
+        return True
+    return False
+
 
 def save_user_profile(user_id: str, profile_data: dict, type: str):
     if( type == "register"):
+        verification_token = str(uuid.uuid4())
+        send_verification_email(user_id, verification_token)
         collection.update_one(
             {"user_id": user_id},
             {"$set": {
                 "password": profile_data,
                 "plan": "Basic",
                 "analytics": {"emails": 0, "switches": 0, "commands": 0},
-                "profile": get_default_profile_data()
+                "profile": get_default_profile_data(),
+                "email_verified": False,
+                "verification_token": verification_token,
+                "verification_expiry": (datetime.utcnow() + timedelta(minutes=15)).isoformat()
             }},
             upsert=True
         )
