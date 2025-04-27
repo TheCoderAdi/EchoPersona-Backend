@@ -15,7 +15,9 @@ from src.database.mongo_manager import(
     get_analytics,
     get_story_nfts,
     set_plan, get_plan,
-    get_away_logs
+    get_away_logs,
+    get_user_by_token, update_user_verification,
+    collection
 )
 from src.auth.jwt_handler import (
     get_password_hash, verify_password,
@@ -26,21 +28,33 @@ from src.skills import maze_game_skill
 
 from src.mint.story_nft_skill import handle_story_and_mint
 from src.skills.shopping_assistant_skill import handle_shopping_flow
+from src.utils.email_service import send_verification_email
+
 from fastapi import WebSocket, WebSocketDisconnect
+from fastapi.responses import RedirectResponse
+from fastapi import Request
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 import os
 import asyncio
 from dotenv import load_dotenv
 from datetime import datetime
 from typing import List, Dict
+import uuid
+from datetime import datetime, timedelta
 
 load_dotenv(override=True)
 
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI()
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGIN"),
+    allow_origins=os.getenv("CORS_ORIGIN").split(","),  
     allow_credentials=True,
     allow_methods=["*"],  
     allow_headers=["*"],  
@@ -121,6 +135,9 @@ class GuessRequest(BaseModel):
     duel_id: int
     path: List[str]
 
+class SendVerificationRequest(BaseModel):
+    user_id: str
+
 active_connections: Dict[int, list[WebSocket]] = {}
 
 @app.websocket("/api/duel/ws/{duel_id}")
@@ -147,13 +164,67 @@ async def broadcast_winner(duel_id: int, winner: str):
 
 
 @app.post("/register")
-def register(req: AuthRequest):
+@limiter.limit("5/minute")
+def register(request: Request,req: AuthRequest):
+    if(req.user_id.endswith("@gmail.com") == False):
+        raise HTTPException(status_code=400, detail="User ID must be a valid Gmail address")
+    if len(req.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long")
+    
     if get_user_auth(req.user_id):
         raise HTTPException(status_code=400, detail="User already exists")
-    
+
     hashed_pw = get_password_hash(req.password)
     save_user_profile(req.user_id, hashed_pw, "register")
     return {"message": "User registered successfully"}
+
+@app.get("/verify-email/{token}")
+@limiter.limit("5/minute")
+def verify_email(request: Request,token:str):
+    user = get_user_by_token(token)
+
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid token")
+    
+    if user.get("email_verified"):
+        return {"message": "Email already verified"}
+    
+    if user.get("verification_expiry") and datetime.utcnow() > datetime.fromisoformat(user["verification_expiry"]):
+        raise HTTPException(status_code=400, detail="Token expired")
+    
+    if update_user_verification(user["user_id"]):
+        return RedirectResponse(url=os.getenv("FRONTEND_URL")+"/auth?message=verified", status_code=302)
+    else:
+        raise HTTPException(status_code=400, detail="Email verification failed")
+
+@app.post("/send-verification-email")
+@limiter.limit("5/minute")
+def send_email(request: Request,req: SendVerificationRequest):
+    user_id = req.user_id
+    user = get_user_auth(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user.get("email_verified"):
+        raise HTTPException(status_code=400, detail="Email already verified")
+
+    # check user have verification token and it is not expired
+    if user.get("verification_token") and user.get("verification_expiry") and datetime.utcnow() < datetime.fromisoformat(user["verification_expiry"]):
+        send_verification_email(user_id, user["verification_token"])
+        return {"message": "Verification email sent"}
+
+    verification_token = str(uuid.uuid4())
+    send_verification_email(user_id, verification_token)
+
+    collection.update_one(
+        {"user_id": user_id},
+        {"$set": {
+            "verification_token": verification_token,
+            "verification_expiry": (datetime.utcnow() + timedelta(minutes=15)).isoformat()
+        }}
+    )
+
+    return {"message": "Verification email sent"}
 
 @app.get("/analytics/{user_id}")
 def get_user_analytics(user_id: str):
@@ -175,8 +246,15 @@ def get_user_analytics(user_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/login")
-def login(req: AuthRequest):
-    password = get_user_auth(req.user_id)
+@limiter.limit("5/minute")
+def login(request: Request,req: AuthRequest):
+    doc = get_user_auth(req.user_id)
+
+    verified = doc.get("email_verified") if doc else None
+    if not verified:
+        raise HTTPException(status_code=401, detail="Email not verified")
+
+    password = doc.get("password") if doc else None
     if not password or not verify_password(req.password, password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
@@ -221,24 +299,26 @@ def update_profile(request: ProfileUpdateRequest):
     return {"message": f"Updated Profile Successfully"}
 
 @app.post("/switch-mode")
-def switch_mode(request: ModeSwitchRequest):
+@limiter.limit("5/minute")
+def switch_mode(request: Request,req: ModeSwitchRequest):
     """Switches between 'professional' and 'fun' mode."""
-    profile = get_user_profile(request.user_id)
+    profile = get_user_profile(req.user_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
 
-    if request.mode not in ["professional", "fun"]:
+    if req.mode not in ["professional", "fun"]:
         raise HTTPException(status_code=400, detail="Invalid mode. Choose 'professional' or 'fun'.")
     
-    set_mode_mongo(request.user_id, request.mode)
+    set_mode_mongo(req.user_id, req.mode)
 
-    increment_switch_count(request.user_id)
+    increment_switch_count(req.user_id)
 
-    return {"message": f"Mode switched to {request.mode.capitalize()} Mode 🎭"}
+    return {"message": f"Mode switched to {req.mode.capitalize()} Mode 🎭"}
 
 @app.post("/chat-with-mimic")
-def chat_with_mimic(request: ChatMimicRequest):
-    user_profile = get_user_profile(request.user_id)
+@limiter.limit("5/minute")
+def chat_with_mimic(request: Request,req: ChatMimicRequest):
+    user_profile = get_user_profile(req.user_id)
     if not user_profile:
         raise HTTPException(status_code=404, detail="Profile not found")
 
@@ -251,15 +331,15 @@ def chat_with_mimic(request: ChatMimicRequest):
     if plan == "Premium" and chat_count >= 500:
         raise HTTPException(status_code=403, detail="You have reached your chat limit for the Premium plan.")
 
-    agent = PersonaAgent(api_key=GROQ_API_KEY, user_profile=user_profile,user_id=request.user_id)
+    agent = PersonaAgent(api_key=GROQ_API_KEY, user_profile=user_profile,user_id=req.user_id)
     async def streamer():
         response_text = ""
-        async for chunk in agent.generate_response(request.user_input):
+        async for chunk in agent.generate_response(req.user_input):
             response_text += chunk
             yield chunk.encode("utf-8")  
 
-        set_chat(request.user_id, request.user_input, response_text)
-        increment_command_count(request.user_id)
+        set_chat(req.user_id, req.user_input, response_text)
+        increment_command_count(req.user_id)
 
     return StreamingResponse(streamer(), media_type="text/plain")
 
@@ -273,9 +353,10 @@ def get_chats(user_id: str):
     return chat
 
 @app.post("/draft-email")
-def draft_email(request: DraftEmailRequest):
+@limiter.limit("5/minute")
+def draft_email(request:Request,req: DraftEmailRequest):
     """Generates a draft email based on the user's persona."""
-    user_id = request.user_id
+    user_id = req.user_id
 
     user_profile = get_user_profile(user_id)
     plan = user_profile.get("plan", "Basic")
@@ -293,8 +374,8 @@ def draft_email(request: DraftEmailRequest):
     agent = PersonaAgent(api_key=GROQ_API_KEY, user_profile=user_profile,user_id=user_id)
 
     prompt = f"""
-    Draft a professional email to {request.recipient} with the subject '{request.subject}'. 
-    The context of the email is: {request.context}.
+    Draft a professional email to {req.recipient} with the subject '{req.subject}'. 
+    The context of the email is: {req.context}.
     Keep the tone consistent with the user's professional persona.
     """
     draft = agent.draft_email(prompt)
@@ -303,26 +384,27 @@ def draft_email(request: DraftEmailRequest):
 
     return {
         "user_id": user_id,
-        "recipient": request.recipient,
-        "subject": request.subject,
+        "recipient": req.recipient,
+        "subject": req.subject,
         "draft": draft
     }
 
 @app.post("/set-away")
-def set_away(request: SetAwayRequest):
+@limiter.limit("5/minute")
+def set_away(request:Request,req: SetAwayRequest):
     """Sets the user's status to away or available."""
-    user_profile = get_user_profile(request.user_id)
+    user_profile = get_user_profile(req.user_id)
     if not user_profile:
         raise HTTPException(status_code=404, detail="Profile not found")
 
-    set_away_mongo(request.user_id, request.away)
+    set_away_mongo(req.user_id, req.away)
 
-    increment_switch_count(request.user_id)
+    increment_switch_count(req.user_id)
 
-    if not request.away:
-        bot_manager.stop_bot(request.user_id)
+    if not req.away:
+        bot_manager.stop_bot(req.user_id)
 
-    return {"message": f"User status set to {'away' if request.away else 'available'}."}
+    return {"message": f"User status set to {'away' if req.away else 'available'}."}
 
 @app.post("/receive-message")
 def receive_message(request: ReceiveMessageRequest):
@@ -349,8 +431,9 @@ def receive_message(request: ReceiveMessageRequest):
     }
 
 @app.post("/initialize-bot")
-def initialize_bot(request: InitBotPayload):
-    result = bot_manager.initialize_bot(request.user_id, request.bot_token)
+@limiter.limit("5/minute")
+def initialize_bot(request:Request,req: InitBotPayload):
+    result = bot_manager.initialize_bot(req.user_id, req.bot_token)
     return {"message": result}
 
 @app.post("/stop-bot")
@@ -454,14 +537,13 @@ def summarize_away_sessions(data: SummarizeRequest):
 
 @app.post("/api/duel/create")
 def create_duel(req: PathRequest):
-    try:
-        plan = get_plan(req.user_id)
-        if plan == "Basic":
-            raise HTTPException(status_code=403, detail="Basic plan does not support duel creation.")
-        duel_id = maze_game_skill.create_duel(req.path)
-        return {"duel_id": duel_id}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    plan = get_plan(req.user_id) 
+    if not plan:
+        raise HTTPException(status_code=404, detail="Profile or plan not found")
+    if plan  == "Basic":
+        raise HTTPException(status_code=403, detail="Basic plan does not support duel creation.")
+    duel_id = maze_game_skill.create_duel(req.path)
+    return {"duel_id": duel_id}
 
 
 @app.post("/api/duel/submit")
