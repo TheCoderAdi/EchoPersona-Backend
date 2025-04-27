@@ -11,3 +11,4 @@ serpapi==0.1.5
 bcrypt==4.3.0
 discord==2.3.2
 web3==7.10.0
+slowapi==0.1.9
