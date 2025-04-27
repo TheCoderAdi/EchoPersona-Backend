@@ -222,6 +222,10 @@ SECRET_KEY=your-secret-key
 FASTAPI_ENDPOINT=your-backend-url/receive-message
 MONGO_URI=your-mongodb-url
 CORS_ORIGIN=your-frontend-url
+EMAIL=your-email
+EMAIL_PASSWORD=your-email-app-password
+BACKEND_URL=your-backend-url
+FRONTEND_URL=your-frontend-url
 ```
 
 ### Local Setup:
@@ -250,6 +254,7 @@ uvicorn main:app --reload
 ```
 
 ### My Deployed Contracts:
+
 - EchoPersonaPlan Contract (On Base) - https://base-sepolia.blockscout.com/address/0x44D3C2F96128d1be60431cA0a062218003ffd100
 - MazeGame Contract (On Monad) - https://testnet.monadexplorer.com/address/0xd7D156c4c244a606757F2D13DA0cb997cFAf8c2A
 - StoryNFT Contract (On Monad) - https://testnet.monadexplorer.com/token/0x117981C7fEAaEaA9a24261f57DC76D1aEa3C05A3?tab=Items
